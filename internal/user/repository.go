@@ -1,6 +1,7 @@
 package user
 
 import (
+	"context"
 	"fmt"
 	"log"
 
@@ -11,12 +12,12 @@ import (
 )
 
 type Repository interface {
-	Create(user *domain.User) error
-	GetAll(filters Filters, offset, limit int) ([]domain.User, error)
-	Get(id string) (*domain.User, error)
-	Delete(id string) error
-	Update(id string, firstName *string, lastName *string, email *string, phone *string) error
-	Count(filters Filters) (int, error)
+	Create(ctx context.Context, user *domain.User) error
+	GetAll(ctx context.Context, filters Filters, offset, limit int) ([]domain.User, error)
+	Get(ctx context.Context, id string) (*domain.User, error)
+	Delete(ctx context.Context, id string) error
+	Update(ctx context.Context, id string, firstName *string, lastName *string, email *string, phone *string) error
+	Count(ctx context.Context, filters Filters) (int, error)
 }
 
 type repo struct {
@@ -31,7 +32,7 @@ func NewRepo(log *log.Logger, db *gorm.DB) Repository {
 	}
 }
 
-func (repo *repo) Create(user *domain.User) error {
+func (repo *repo) Create(ctx context.Context, user *domain.User) error {
 
 	// user.ID = uuid.New().String()
 
@@ -41,7 +42,7 @@ func (repo *repo) Create(user *domain.User) error {
 	// 	return result.Error
 	// }
 
-	if err := repo.db.Debug().Create(user).Error; err != nil {
+	if err := repo.db.Debug().WithContext(ctx).Create(user).Error; err != nil {
 		repo.log.Println(err)
 		return err
 	}
@@ -50,10 +51,10 @@ func (repo *repo) Create(user *domain.User) error {
 	return nil
 }
 
-func (repo *repo) GetAll(filters Filters, offset, limit int) ([]domain.User, error) {
+func (repo *repo) GetAll(ctx context.Context, filters Filters, offset, limit int) ([]domain.User, error) {
 	var user []domain.User
 
-	tx := repo.db.Model(&user)
+	tx := repo.db.WithContext(ctx).Model(&user)
 	tx = applyFilters(tx, filters)
 	tx = tx.Limit(limit).Offset(offset)
 	result := tx.Order("created_at desc").Find(&user)
@@ -64,29 +65,34 @@ func (repo *repo) GetAll(filters Filters, offset, limit int) ([]domain.User, err
 	return user, nil
 }
 
-func (repo *repo) Get(id string) (*domain.User, error) {
+func (repo *repo) Get(ctx context.Context, id string) (*domain.User, error) {
 	user := domain.User{
 		ID: id,
 	}
-	result := repo.db.First(&user)
+	result := repo.db.WithContext(ctx).First(&user)
 	if result.Error != nil {
-		return nil, result.Error
+		repo.log.Println(result.Error)
+		return nil, ErrNotFound{id}
 	}
 	return &user, nil
 }
 
-func (repo *repo) Delete(id string) error {
+func (repo *repo) Delete(ctx context.Context, id string) error {
 	user := domain.User{
 		ID: id,
 	}
-	result := repo.db.Delete(&user)
+	result := repo.db.WithContext(ctx).Delete(&user)
 	if result.Error != nil {
+		repo.log.Println(result.Error)
 		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound{id}
 	}
 	return nil
 }
 
-func (repo *repo) Update(id string, firstName *string, lastName *string, email *string, phone *string) error {
+func (repo *repo) Update(ctx context.Context, id string, firstName *string, lastName *string, email *string, phone *string) error {
 
 	values := make(map[string]interface{})
 
@@ -106,11 +112,15 @@ func (repo *repo) Update(id string, firstName *string, lastName *string, email *
 		values["phone"] = phone
 	}
 
-	result := repo.db.Model(&domain.User{}).Where("id = ?", id).Updates(values)
+	result := repo.db.WithContext(ctx).Model(&domain.User{}).Where("id = ?", id).Updates(values)
 	if result.Error != nil {
+		repo.log.Println(result.Error)
 		return result.Error
 	}
 
+	if result.RowsAffected == 0 {
+		return ErrNotFound{id}
+	}
 	return nil
 }
 
@@ -128,11 +138,12 @@ func applyFilters(tx *gorm.DB, filters Filters) *gorm.DB {
 	return tx
 }
 
-func (repo *repo) Count(filters Filters) (int, error) {
+func (repo *repo) Count(ctx context.Context, filters Filters) (int, error) {
 	var count int64
-	tx := repo.db.Model(domain.User{})
+	tx := repo.db.WithContext(ctx).Model(domain.User{})
 	tx = applyFilters(tx, filters)
 	if err := tx.Count(&count).Error; err != nil {
+		repo.log.Println(err)
 		return 0, nil
 	}
 	return int(count), nil
